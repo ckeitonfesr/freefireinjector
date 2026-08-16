@@ -73,6 +73,7 @@ jobs:
             -dynamiclib \
             -framework UIKit \
             -framework Foundation \
+            -framework CoreGraphics \
             -I/tmp/logos_include \
             -o FreeFirInjector.dylib \
             "$SRC"

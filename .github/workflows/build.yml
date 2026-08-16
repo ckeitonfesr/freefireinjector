@@ -1,22 +1,11 @@
-# ═══════════════════════════════════════════════════════════════
-#  GitHub Actions — Compila FreeFirInjector.dylib no macOS
-#  Arquivo: .github/workflows/build.yml
-#
-#  Como usar:
-#  1. Crie um repo privado no GitHub
-#  2. Coloque a pasta "tweak/" no repo
-#  3. Faça push desse arquivo em .github/workflows/build.yml
-#  4. Vá em Actions → "Build FreeFire Injector" → Run workflow
-#  5. Baixe o artifact "FreeFirInjector-dylib"
-# ═══════════════════════════════════════════════════════════════
-
 name: Build FreeFire Injector
 
 on:
-  workflow_dispatch:   # Botao manual no GitHub Actions
+  workflow_dispatch:
   push:
     paths:
-      - 'tweak/**'    # Auto-build quando Tweak.x mudar
+      - 'tweak/**'
+      - '.github/workflows/build.yml'
 
 jobs:
   build:
@@ -24,66 +13,128 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      # ── 1. Checkout do repositorio ────────────────────────────
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── 2. Instala Theos ──────────────────────────────────────
+      # ── Instala Theos via script oficial ─────────────────────
       - name: Install Theos
         run: |
-          echo "Instalando Theos..."
-          bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
+          set -e
+          echo "Clonando Theos..."
+          git clone --recursive https://github.com/theos/theos.git $HOME/theos
           echo "THEOS=$HOME/theos" >> $GITHUB_ENV
           echo "$HOME/theos/bin" >> $GITHUB_PATH
 
-      # ── 3. Instala dependencias do Theos (SDKs) ───────────────
-      - name: Install Theos SDKs
+      # ── Baixa SDKs iOS pre-compilados ────────────────────────
+      - name: Install iOS SDKs
         run: |
-          git clone --depth=1 https://github.com/theos/sdks/ /tmp/theos-sdks
-          cp -r /tmp/theos-sdks/*.sdk $HOME/theos/sdks/ 2>/dev/null || true
-          ls $HOME/theos/sdks/
+          set -e
+          curl -LO https://github.com/theos/sdks/releases/latest/download/iPhoneOS16.5.sdk.tar.xz || \
+          curl -LO https://github.com/theos/sdks/releases/download/iphoneos16.5/iPhoneOS16.5.sdk.tar.xz || true
 
-      # ── 4. Compila o tweak ────────────────────────────────────
+          # Tenta baixar qualquer SDK disponivel
+          SDK_URL="https://github.com/theos/sdks/releases"
+          LATEST=$(curl -s https://api.github.com/repos/theos/sdks/releases/latest | grep "browser_download_url" | grep ".sdk.tar" | head -1 | cut -d'"' -f4)
+
+          if [ -n "$LATEST" ]; then
+            echo "Baixando SDK: $LATEST"
+            curl -L "$LATEST" -o sdk.tar.xz
+            tar -xf sdk.tar.xz -C $HOME/theos/sdks/
+          else
+            echo "Usando SDK do sistema (fallback)"
+            # Cria um link simbolico para o SDK do Xcode instalado
+            XCODE_SDK=$(xcodebuild -showsdks 2>/dev/null | grep iphoneos | tail -1 | awk '{print $NF}' | sed 's/sdk//')
+            SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null)
+            if [ -n "$SDK_PATH" ]; then
+              mkdir -p $HOME/theos/sdks
+              ln -sf "$SDK_PATH" "$HOME/theos/sdks/iPhoneOS$(echo $XCODE_SDK | tr -d 'iphoneos').sdk" || true
+            fi
+          fi
+
+          echo "SDKs disponiveis:"
+          ls $HOME/theos/sdks/ 2>/dev/null || echo "(nenhum SDK externo)"
+          xcrun --sdk iphoneos --show-sdk-path 2>/dev/null && echo "SDK do Xcode OK" || true
+
+      # ── Compila com Theos (com fallback para clang direto) ───
       - name: Build tweak
         working-directory: tweak
+        env:
+          THEOS: ${{ env.THEOS }}
         run: |
+          set -e
+
+          echo "=== Tentando build com Theos ==="
           export THEOS=$HOME/theos
-          make clean
-          make package FINALPACKAGE=1
-          echo "Build concluido!"
-          ls -la
 
-      # ── 5. Localiza a dylib gerada ────────────────────────────
-      - name: Find and copy dylib
-        working-directory: tweak
-        run: |
-          DYLIB=$(find . -name "FreeFirInjector.dylib" | head -1)
-          if [ -z "$DYLIB" ]; then
-            # Tenta no diretorio de staging do Theos
-            DYLIB=$(find $HOME/theos -name "FreeFirInjector.dylib" 2>/dev/null | head -1)
+          # Detecta SDK disponivel
+          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null || echo "")
+          THEOS_SDK=$(ls $HOME/theos/sdks/*.sdk 2>/dev/null | head -1 || echo "")
+
+          if [ -n "$THEOS_SDK" ]; then
+            echo "Usando SDK Theos: $THEOS_SDK"
+            make package ARCHS=arm64 2>&1 | tail -50 && BUILD_OK=1 || BUILD_OK=0
+          elif [ -n "$SDK_PATH" ]; then
+            echo "Usando SDK do Xcode: $SDK_PATH"
+            make package ARCHS=arm64 SYSROOT="$SDK_PATH" 2>&1 | tail -50 && BUILD_OK=1 || BUILD_OK=0
+          else
+            BUILD_OK=0
           fi
-          echo "Dylib encontrada: $DYLIB"
-          cp "$DYLIB" ./FreeFirInjector.dylib
-          ls -la FreeFirInjector.dylib
-          file FreeFirInjector.dylib
 
-      # ── 6. Faz upload do artifact (disponivel para download) ──
-      - name: Upload dylib artifact
+          if [ "$BUILD_OK" = "0" ]; then
+            echo ""
+            echo "=== Theos falhou, tentando compilacao direta com clang ==="
+
+            SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
+            SUBSTRATE_H="$HOME/theos/vendor/include"
+
+            # Pre-processa o Tweak.x com logos (se disponivel) ou usa como ObjC direto
+            if [ -f "$HOME/theos/bin/logos.pl" ]; then
+              echo "Processando Logos..."
+              perl $HOME/theos/bin/logos.pl Tweak.x > Tweak_processed.m
+            else
+              # Converte manualmente: remove diretivas %hook, usa ObjC puro
+              echo "Logos nao disponivel, compilando versao simplificada..."
+              cp Tweak_simple.m Tweak_processed.m 2>/dev/null || cp Tweak.x Tweak_processed.m
+            fi
+
+            # Compila direto com clang
+            xcrun clang \
+              -arch arm64 \
+              -isysroot "$SDK_PATH" \
+              -miphoneos-version-min=14.0 \
+              -fobjc-arc \
+              -dynamiclib \
+              -framework UIKit \
+              -framework Foundation \
+              -I"$HOME/theos/vendor/include" \
+              -I"$HOME/theos/include" \
+              -F"$SDK_PATH/System/Library/Frameworks" \
+              -o FreeFirInjector.dylib \
+              Tweak_processed.m 2>&1 | tail -30 && BUILD_OK=1 || BUILD_OK=0
+          fi
+
+          if [ "$BUILD_OK" = "0" ]; then
+            echo "ERRO: Build falhou em todos os metodos"
+            exit 1
+          fi
+
+          ls -la *.dylib
+
+      # ── Garante que a dylib esta no lugar certo ───────────────
+      - name: Collect dylib
+        run: |
+          set -e
+          DYLIB=$(find . -name "FreeFirInjector.dylib" | head -1)
+          echo "Dylib encontrada: $DYLIB"
+          cp "$DYLIB" ./FreeFirInjector_output.dylib
+          ls -lh FreeFirInjector_output.dylib
+          file FreeFirInjector_output.dylib
+          lipo -info FreeFirInjector_output.dylib || true
+
+      # ── Upload artifact ───────────────────────────────────────
+      - name: Upload dylib
         uses: actions/upload-artifact@v4
         with:
           name: FreeFirInjector-dylib
-          path: tweak/FreeFirInjector.dylib
+          path: FreeFirInjector_output.dylib
           retention-days: 30
-
-      # ── 7. Mostra info do binario gerado ──────────────────────
-      - name: Show binary info
-        working-directory: tweak
-        run: |
-          echo "=== Dylib gerada ==="
-          ls -lh FreeFirInjector.dylib
-          echo ""
-          echo "=== Arquiteturas ==="
-          lipo -info FreeFirInjector.dylib || true
-          echo ""
-          echo "=== Load commands ==="
-          otool -L FreeFirInjector.dylib || true

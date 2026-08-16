@@ -1,0 +1,33 @@
+# Binarios e IPAs grandes
+Apps.ipa
+Apps_Modified.ipa
+
+# Pasta extraida do IPA (gerada automaticamente)
+Extracted/
+
+# Arquivos temporarios Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Arquivos de teste
+*.id0
+*.id1
+*.id2
+*.nam
+*.til
+test_ok.txt
+output.txt
+debug*.txt
+info.txt
+
+# Build do Theos (local)
+tweak/.theos/
+tweak/packages/
+tweak/obj/
+tweak/layout/
+
+# macOS
+.DS_Store

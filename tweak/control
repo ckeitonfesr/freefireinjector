@@ -1,0 +1,9 @@
+Package: com.lopes.freefirinjector
+Name: FreeFire Injector
+Version: 1.0.0
+Architecture: iphoneos-arm64
+Description: Adiciona um botao flutuante no Filza (3105) para injetar arquivos no Free Fire.
+Author: Lopes
+Maintainer: Lopes
+Section: Tweaks
+Depends: mobilesubstrate | substitute | libhooker

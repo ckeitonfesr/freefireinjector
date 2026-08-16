@@ -1,0 +1,89 @@
+# ═══════════════════════════════════════════════════════════════
+#  GitHub Actions — Compila FreeFirInjector.dylib no macOS
+#  Arquivo: .github/workflows/build.yml
+#
+#  Como usar:
+#  1. Crie um repo privado no GitHub
+#  2. Coloque a pasta "tweak/" no repo
+#  3. Faça push desse arquivo em .github/workflows/build.yml
+#  4. Vá em Actions → "Build FreeFire Injector" → Run workflow
+#  5. Baixe o artifact "FreeFirInjector-dylib"
+# ═══════════════════════════════════════════════════════════════
+
+name: Build FreeFire Injector
+
+on:
+  workflow_dispatch:   # Botao manual no GitHub Actions
+  push:
+    paths:
+      - 'tweak/**'    # Auto-build quando Tweak.x mudar
+
+jobs:
+  build:
+    name: Compile dylib (macOS + Theos)
+    runs-on: macos-latest
+
+    steps:
+      # ── 1. Checkout do repositorio ────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. Instala Theos ──────────────────────────────────────
+      - name: Install Theos
+        run: |
+          echo "Instalando Theos..."
+          bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
+          echo "THEOS=$HOME/theos" >> $GITHUB_ENV
+          echo "$HOME/theos/bin" >> $GITHUB_PATH
+
+      # ── 3. Instala dependencias do Theos (SDKs) ───────────────
+      - name: Install Theos SDKs
+        run: |
+          git clone --depth=1 https://github.com/theos/sdks/ /tmp/theos-sdks
+          cp -r /tmp/theos-sdks/*.sdk $HOME/theos/sdks/ 2>/dev/null || true
+          ls $HOME/theos/sdks/
+
+      # ── 4. Compila o tweak ────────────────────────────────────
+      - name: Build tweak
+        working-directory: tweak
+        run: |
+          export THEOS=$HOME/theos
+          make clean
+          make package FINALPACKAGE=1
+          echo "Build concluido!"
+          ls -la
+
+      # ── 5. Localiza a dylib gerada ────────────────────────────
+      - name: Find and copy dylib
+        working-directory: tweak
+        run: |
+          DYLIB=$(find . -name "FreeFirInjector.dylib" | head -1)
+          if [ -z "$DYLIB" ]; then
+            # Tenta no diretorio de staging do Theos
+            DYLIB=$(find $HOME/theos -name "FreeFirInjector.dylib" 2>/dev/null | head -1)
+          fi
+          echo "Dylib encontrada: $DYLIB"
+          cp "$DYLIB" ./FreeFirInjector.dylib
+          ls -la FreeFirInjector.dylib
+          file FreeFirInjector.dylib
+
+      # ── 6. Faz upload do artifact (disponivel para download) ──
+      - name: Upload dylib artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FreeFirInjector-dylib
+          path: tweak/FreeFirInjector.dylib
+          retention-days: 30
+
+      # ── 7. Mostra info do binario gerado ──────────────────────
+      - name: Show binary info
+        working-directory: tweak
+        run: |
+          echo "=== Dylib gerada ==="
+          ls -lh FreeFirInjector.dylib
+          echo ""
+          echo "=== Arquiteturas ==="
+          lipo -info FreeFirInjector.dylib || true
+          echo ""
+          echo "=== Load commands ==="
+          otool -L FreeFirInjector.dylib || true
